@@ -25,12 +25,13 @@ import matplotlib.pyplot as plt
 
 #######################
 #Variables
-RUN_NAME = "Test2"
+RUN_NAME = "Run_1"
 CONTINUE_TRAIN = False
+DEVICE = 0
 
 TARGET_UPDATE = 200
 BATCH_SIZE = 32
-EXPERIENCEBUF_SIZE = 1000 #number of experiences stored in experience replay buffer
+EXPERIENCEBUF_SIZE = 10000 #number of experiences stored in experience replay buffer
 GAMMA = 0.95
 
 
@@ -44,12 +45,13 @@ def init_weights(m):
 
 def setup(self):
 	global RUN_NAME
+	global DEVICE
 	global EXPERIENCEBUF_SIZE
 	global CONTINUE_TRAIN
 
 	start = time()
 	#initialize CUDA
-	dev = "cuda:0" if torch.cuda.is_available() else "cpu"
+	dev = "cuda:{}".format(DEVICE) if torch.cuda.is_available() else "cpu"
 	self.device = torch.device(dev)
 	self.logger.info("Using device: " + dev)
 	
@@ -65,6 +67,8 @@ def setup(self):
 	self.avg_rewards = [] #average rewards per episode
 	self.step_losses = []
 	self.avg_losses = []
+	self.current_steps = 0
+	self.steps_per_episode = []
 	
 	
 	#initialize model, optimizer and loss
@@ -88,6 +92,10 @@ def setup(self):
 		pos = files[-1].find(".pth")
 		if pos > 0:
 			self.numepisodes = int(files[-1][8:pos]) #for continuing training
+		
+		self.avg_rewards = np.load(path+"/rewards.npy").tolist()
+		self.avg_losses = np.load(path+"/losses.npy").tolist()
+		self.steps_per_episode = no.load(path+"/steps.npy").tolist()
 	else:
 		self.pnet.apply(init_weights)
 	
@@ -105,7 +113,9 @@ def setup(self):
 
 
 def act(self):
-	self.nextaction = s.actions[5]
+	self.nextaction = s.actions[5] #default is wait
+	self.current_steps += 1
+	
 	#access scene information and build data from it
 	self.currentstate = pack_scene(self.game_state)
 	cstate = self.currentstate.to(self.device)
@@ -122,7 +132,6 @@ def act(self):
 
 
 def reward_update(self):
-	print("event")
 	#collect new experience and store it
 	newstate = pack_scene(self.game_state)
 	
@@ -130,10 +139,9 @@ def reward_update(self):
 	totalreward = 0
 	is_terminal = 0
 	for ev in self.events:
-		totalreward += rewards_normal[ev] #rewards_clipped[e]
+		totalreward += rewards_clipped[ev] #rewards_clipped[e]
 		if ev == e.KILLED_SELF or ev == e.GOT_KILLED or ev == e.SURVIVED_ROUND:
 			is_terminal = 1
-			print("Died")
 	
 	self.step_rewards.append(totalreward)
 	self.memory.add(self.currentstate, self.lastaction, totalreward, newstate, is_terminal)
@@ -146,6 +154,19 @@ def end_of_episode(self):
 	global GAMMA
 	
 	start = time()
+	
+	#look for final state
+	newstate = pack_scene(self.game_state)
+	totalreward = 0
+	is_terminal = 0
+	for ev in self.events:
+		totalreward += rewards_clipped[ev]
+		if ev == e.KILLED_SELF or ev == e.GOT_KILLED or ev == e.SURVIVED_ROUND:
+			is_terminal = 1
+			break #always got killed_self and got_killed one after each other
+	
+	self.step_rewards.append(totalreward)
+	self.memory.add(self.currentstate, self.lastaction, totalreward, newstate, is_terminal)
 	
 	#sample experiences from buffer with batch_size
 	loader = DataLoader(self.memory, BATCH_SIZE, shuffle=True)
@@ -184,16 +205,12 @@ def end_of_episode(self):
 	
 	curpath = os.path.dirname(os.path.realpath(__file__))
 	self.numepisodes += 1
-	if self.numepisodes % 100 == 0: #save every 100 episode
-		#save model
-		path = os.path.join(curpath, "checkpoints", RUN_NAME)
-		path = os.path.join(path, "episode_{}.pth".format(self.numepisodes))
-		torch.save(self.pnet.state_dict(), path)
 	
 	#visualization
 	if self.numepisodes % 10 == 0:
 		self.avg_rewards.append(np.mean(self.step_rewards))
 		self.avg_losses.append(np.mean(self.step_losses))
+		self.steps_per_episode.append(self.current_steps)
 	
 	if self.numepisodes % 20 == 0:
 		plt.figure(1, dpi=200)
@@ -211,8 +228,26 @@ def end_of_episode(self):
 		plt.plot(np.arange(len(self.avg_losses))*10, self.avg_losses)
 		plt.savefig(os.path.join(curpath, "checkpoints", RUN_NAME, "losses.pdf"))
 		plt.clf()
+		
+		plt.figure(3, dpi=200)
+		plt.title("Steps per Episode")
+		plt.xlabel("Episode")
+		plt.ylabel("Steps")
+		plt.plot(np.arange(len(self.steps_per_episode))*10, self.steps_per_episode)
+		plt.savefig(os.path.join(curpath, "checkpoints", RUN_NAME, "steps.pdf"))
+		plt.clf()
 	
 	self.step_rewards = []
 	self.step_losses = []
+	self.current_steps = 0
+	
+	if self.numepisodes % 100 == 0: #save every 100 episode
+		#save model
+		path = os.path.join(curpath, "checkpoints", RUN_NAME)
+		path = os.path.join(path, "episode_{}.pth".format(self.numepisodes))
+		torch.save(self.pnet.state_dict(), path)
+		np.save(os.path.join(curpath, "checkpoints", RUN_NAME, "rewards.npy"), np.array(self.avg_rewards))
+		np.save(os.path.join(curpath, "checkpoints", RUN_NAME, "losses.npy"), np.array(self.avg_losses))
+		np.save(os.path.join(curpath, "checkpoints", RUN_NAME, "steps.npy"), np.array(self.steps_per_episode))
 	
 	self.logger.info("Training Episode {} took {:.2f}s".format(self.numepisodes, time()-start))
