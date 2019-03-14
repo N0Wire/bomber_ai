@@ -1,0 +1,11 @@
+#ignore all logs
+*.log
+
+#no compiled python files
+*.pyc
+
+logs/*
+__pycache__
+agent_code/*/logs/*
+agent_code/*/checkpoints/*
+agent_code/*/__pycache__
