@@ -42,6 +42,7 @@ def pack_scene(data):
 	return torch.from_numpy(np.array(vec)).float()  #[vec]
 
 
+#a normal Buffer which stores experiences
 class ReplayBuffer(Dataset):
 	def __init__(self, dev, maxsize):
 		super(ReplayBuffer, self).__init__()
@@ -80,3 +81,5 @@ class ReplayBuffer(Dataset):
 			reward = reward.to(self.device)
 		
 		return {"state" : state, "nextstate" : nextstate, "action" : action, "reward" : reward, "terminal" : terminal}
+
+	

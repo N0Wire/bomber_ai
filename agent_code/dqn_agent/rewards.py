@@ -1,6 +1,6 @@
 from settings import e
 
-#dictionary for rewards
+#dictionaries for rewards
 rewards_normal = {
 	e.MOVED_LEFT : 1,
 	e.MOVED_RIGHT : 1,
@@ -19,6 +19,26 @@ rewards_normal = {
 	e.GOT_KILLED : -100,
 	e.OPPONENT_ELIMINATED : 0,
 	e.SURVIVED_ROUND : 10
+}
+
+rewards_normal2 = {
+	e.MOVED_LEFT : 10,
+	e.MOVED_RIGHT : 10,
+	e.MOVED_UP : 10,
+	e.MOVED_DOWN : 10,
+	e.WAITED : -20,
+	e.INTERRUPTED : 0,
+	e.INVALID_ACTION : -20,
+	e.BOMB_DROPPED : 30,
+	e.BOMB_EXPLODED : 0,
+	e.CRATE_DESTROYED : 30,
+	e.COIN_FOUND : 40,
+	e.COIN_COLLECTED : 40,
+	e.KILLED_OPPONENT : 100,
+	e.KILLED_SELF : -100,
+	e.GOT_KILLED : -100,
+	e.OPPONENT_ELIMINATED : 0,
+	e.SURVIVED_ROUND : 100
 }
 
 rewards_clipped = {

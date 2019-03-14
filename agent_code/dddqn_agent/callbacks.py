@@ -10,7 +10,7 @@ import torch
 import torch.nn as nn
 import torch.optim as optim #for ADAM optimizer
 from torch.utils.data import DataLoader
-from .model import FFQN
+from .model import FFQN, DuelingFFQN
 from .memory import pack_scene, ReplayBuffer
 from .rewards import rewards_normal, rewards_clipped
 from .exp import greedy_epsilon
@@ -79,7 +79,7 @@ def setup(self):
 	#calculate input length
 	inlen = 4*s.rows*s.cols+3
 	
-	self.pnet = FFQN(inlen, len(s.actions)) #polciy net
+	self.pnet = DuelingFFQN(inlen, len(s.actions)) #polciy net
 	self.pnet.to(self.device) #we only use device 0
 	
 	#try to load latest model
@@ -103,7 +103,7 @@ def setup(self):
 	else:
 		self.pnet.apply(init_weights)
 	
-	self.tnet = FFQN(inlen, len(s.actions)) #target net - only updated every C times
+	self.tnet = DuelingFFQN(inlen, len(s.actions)) #target net - only updated every C times
 	self.tnet.to(self.device)
 	self.tnet.load_state_dict(self.pnet.state_dict()) #initial target net is same as policy net
 	
@@ -192,7 +192,10 @@ def end_of_episode(self):
 			
 			#calculate q values and loss
 			qs = self.pnet(cstates).gather(1, actions) #actual q values -> only select those which belong to the taken actions
-			nextq = self.tnet(nstates).max(1)[0].detach() #no backprop needed here
+			nextq = 0
+			with torch.no_grad():
+				nextq = self.tnet(nstates)[self.pnet(nstates).max(1)[0].long()] #let the policy net decide the action
+			#nextq = self.tnet(nstates).max(1)[0].detach() #no backprop needed here
 			for t in range(terminals.size()[0]):
 				if terminals[t] == 1:
 					nextq[t] = 0
