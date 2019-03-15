@@ -10,9 +10,9 @@ import torch
 import torch.nn as nn
 import torch.optim as optim #for ADAM optimizer
 from torch.utils.data import DataLoader
-from .model import FFQN
+from .model import FFQN, DuelingFFQN
 from .memory import pack_scene, ReplayBuffer
-from .rewards import rewards_normal, rewards_clipped
+from .rewards import rewards_default, rewards_clipped
 from .exp import greedy_epsilon
 
 import os
@@ -32,13 +32,14 @@ DEVICE = 0
 EPSILON_DECAY = 0.0001
 EPSILON_FINAL = 0.1
 
-TARGET_UPDATE = 200
-BATCH_SIZE = 32
+TARGET_UPDATE = 400 #200
+BATCH_SIZE = 128 #32
 EXPERIENCEBUF_SIZE = 10000 #number of experiences stored in experience replay buffer
 GAMMA = 0.95
 MIN_EXPERIENCES = 200
 
-
+USE_DOUBLE = True
+USE_NET = "dueling" #"default"
 
 
 def init_weights(m):
@@ -52,6 +53,7 @@ def setup(self):
 	global DEVICE
 	global EXPERIENCEBUF_SIZE
 	global CONTINUE_TRAIN
+	global USE_NET
 
 	start = time()
 	#initialize CUDA
@@ -79,7 +81,11 @@ def setup(self):
 	#calculate input length
 	inlen = 4*s.rows*s.cols+3
 	
-	self.pnet = FFQN(inlen, len(s.actions)) #polciy net
+	self.pnet = 0 #policy net
+	if USE_NET == "dueling":
+		self.pnet = DuelingFFQN(inlen, len(s.actions))
+	else:
+		self.pnet = FFQN(inlen, len(s.actions))
 	self.pnet.to(self.device) #we only use device 0
 	
 	#try to load latest model
@@ -103,7 +109,11 @@ def setup(self):
 	else:
 		self.pnet.apply(init_weights)
 	
-	self.tnet = FFQN(inlen, len(s.actions)) #target net - only updated every C times
+	self.tnet = 0 #target net - only updated every C times
+	if USE_NET == "dueling":
+		self.tnet = DuelingFFQN(inlen, len(s.actions))
+	else:
+		self.tnet = FFQN(inlen, len(s.actions))
 	self.tnet.to(self.device)
 	self.tnet.load_state_dict(self.pnet.state_dict()) #initial target net is same as policy net
 	
@@ -148,7 +158,7 @@ def reward_update(self):
 	totalreward = 0
 	is_terminal = 0
 	for ev in self.events:
-		totalreward += rewards_clipped[ev] #rewards_clipped[e]
+		totalreward += rewards_default[ev] #rewards_clipped[e]
 		if ev == e.KILLED_SELF or ev == e.GOT_KILLED or ev == e.SURVIVED_ROUND:
 			is_terminal = 1
 	
@@ -162,17 +172,18 @@ def end_of_episode(self):
 	global TARGET_UPDATE
 	global GAMMA
 	global MIN_EXPERIENCES
+	global USE_DOUBLE
 	
 	start = time()
 	
 	#look for final state
 	newstate = pack_scene(self.game_state)
 	totalreward = 0
-	is_terminal = 0
+	is_terminal = False
 	for ev in self.events:
-		totalreward += rewards_clipped[ev]
+		totalreward += rewards_default[ev]
 		if ev == e.KILLED_SELF or ev == e.GOT_KILLED or ev == e.SURVIVED_ROUND:
-			is_terminal = 1
+			is_terminal = True
 			break #always got killed_self and got_killed one after each other
 	
 	self.step_rewards.append(totalreward)
@@ -187,16 +198,20 @@ def end_of_episode(self):
 			nstates = batch["nextstate"]
 			actions = batch["action"]
 			rewards = batch["reward"]
-			terminals = batch["terminal"]
-			
+			terminals = batch["terminal"].byte()
 			
 			#calculate q values and loss
 			qs = self.pnet(cstates).gather(1, actions) #actual q values -> only select those which belong to the taken actions
-			nextq = self.tnet(nstates).max(1)[0].detach() #no backprop needed here
-			for t in range(terminals.size()[0]):
-				if terminals[t] == 1:
-					nextq[t] = 0
-			nextq = nextq*GAMMA+rewards
+			
+			nextq = 0
+			with torch.no_grad():
+				if USE_DOUBLE:
+					nextq = self.tnet(nstates)[self.pnet(nstates).max(1)[0].long()] #let the policy net decide the action
+				else:
+					nextq = self.tnet(nstates).max(1)[0] #no backprop needed here
+				#self.logger.info(terminals)
+				nextq[terminals] = 0
+				nextq = nextq*GAMMA+rewards
 			
 			loss = self.loss(qs, nextq)
 			
@@ -218,12 +233,12 @@ def end_of_episode(self):
 	self.numepisodes += 1
 	
 	#visualization
-	if self.numepisodes % 10 == 0:
+	if self.numepisodes % 50 == 0:
 		self.avg_rewards.append(np.mean(self.step_rewards))
 		self.avg_losses.append(np.mean(self.step_losses))
 		self.steps_per_episode.append(self.current_steps)
 	
-	if self.numepisodes % 20 == 0:
+	if self.numepisodes % 50 == 0:
 		plt.figure(1, dpi=200)
 		plt.title("Average Reward per Episode")
 		plt.xlabel("Episode")
@@ -252,7 +267,7 @@ def end_of_episode(self):
 	self.step_losses = []
 	self.current_steps = 0
 	
-	if self.numepisodes % 100 == 0: #save every 100 episode
+	if self.numepisodes % 200 == 0: #save every 100 episode
 		#save model
 		path = os.path.join(curpath, "checkpoints", RUN_NAME)
 		path = os.path.join(path, "episode_{}.pth".format(self.numepisodes))

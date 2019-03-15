@@ -54,7 +54,11 @@ class DuelingFFQN(nn.Module):
 		
 		#now do the aggregation
 		#Q(s,a) = V(s) + (A(s,a) - <A>)
-		avg = a.mean(1).unsqueeze(1).expand(a.size(0), self.outsize) #calculate average of a and format it to be ready for substraction
+		#calculate average of a and format it to be ready for substraction
+		if x.dim() == 1:
+			avg = a.mean().expand(self.outsize)
+		else:
+			avg = a.mean(1).unsqueeze(1).repeat(1, self.outsize)
 		
 		x = v + a - avg
 		
