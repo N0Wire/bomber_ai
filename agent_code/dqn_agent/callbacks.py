@@ -1,6 +1,5 @@
 import numpy as np
-from time import time, sleep
-import pygame
+from time import time
 
 from settings import s
 from settings import e
@@ -9,9 +8,8 @@ from settings import e
 import torch
 import torch.nn as nn
 import torch.optim as optim #for ADAM optimizer
-from torch.utils.data import DataLoader
 from .model import FFQN, DuelingFFQN
-from .memory import pack_scene, ReplayBuffer
+from .memory import pack_scene, PrioritizedReplayBuffer
 from .rewards import rewards_default, rewards_clipped
 from .exp import greedy_epsilon
 
@@ -26,7 +24,7 @@ import matplotlib.pyplot as plt
 #######################
 #Variables
 RUN_NAME = "Run_1"
-CONTINUE_TRAIN = True
+CONTINUE_TRAIN = False
 DEVICE = 0
 
 EPSILON_DECAY = 0.0001
@@ -38,14 +36,14 @@ EXPERIENCEBUF_SIZE = 10000 #number of experiences stored in experience replay bu
 GAMMA = 0.95
 MIN_EXPERIENCES = 200
 
-USE_DOUBLE = True
 USE_NET = "dueling" #"default"
-
+USE_DOUBLE = True
+USE_PER = False
 
 def init_weights(m):
 	if type(m) == nn.Linear:
 		nn.init.xavier_normal_(m.weight)
-		#m.bias.data.fill_(0.01)
+		m.bias.data.fill_(0.01)
 
 
 def setup(self):
@@ -62,7 +60,7 @@ def setup(self):
 	self.logger.info("Using device: " + dev)
 	
 	
-	self.memory = ReplayBuffer(self.device, EXPERIENCEBUF_SIZE)
+	self.memory = PrioritizedReplayBuffer(self.device, EXPERIENCEBUF_SIZE)
 	self.oldstate = 0
 	self.lastaction = s.actions[5] #default = 'WAIT'
 	self.epsilon = 1.0
@@ -75,7 +73,6 @@ def setup(self):
 	self.avg_losses = []
 	self.current_steps = 0
 	self.steps_per_episode = []
-	
 	
 	#initialize model, optimizer and loss
 	#calculate input length
@@ -150,6 +147,57 @@ def act(self):
 			self.next_action = s.actions[self.pnet(cstate).max(0)[1]]
 
 
+def train_model(memory, pnet, tnet, loss, optimizer, totalsteps, step_losses):
+	global BATCH_SIZE
+	global USE_DOUBLE
+	global GAMMA
+	global USE_PER
+	
+	if len(memory) >= MIN_EXPERIENCES:
+		#sample experiences from buffer with batch_size
+		
+		cstates, nstates, actions, rewards, terminals, weights, indices = memory.sample(BATCH_SIZE, use_priority=USE_PER)
+		
+		#calculate q values and loss
+		qs = pnet(cstates).gather(1, actions.unsqueeze(1)).squeeze() #actual q values -> only select those which belong to the taken actions
+		
+		nextq = 0
+		with torch.no_grad():
+			if USE_DOUBLE:
+				indices = pnet(nstates).max(1)[1].long()
+				nextq = tnet(nstates).gather(1, indices.unsqueeze(1)).squeeze()
+			else:
+				nextq = tnet(nstates).max(1)[0] #no backprop needed here
+			nextq[terminals] = 0
+			nextq = nextq*GAMMA+rewards
+		
+		error = 0
+		if USE_PER:
+			error = loss(qs, nextq, reduction="none")*weights
+			error = error.mean()
+		else:
+			error = loss(qs, nextq)
+		
+		#do back propagation
+		optimizer.zero_grad()
+		error.backward()
+		optimizer.step()
+		
+		#store values for plotting
+		step_losses.append(error.item())
+		
+		if USE_PER:
+			errors = torch.abs(qs-nextq).data.numpy()
+			#update priority
+			memory.update_many(indices, errors)
+		#update target net
+		totalsteps += 1
+		if totalsteps % TARGET_UPDATE == 0:
+			tnet.load_state_dict(pnet.state_dict())
+		
+	return totalsteps
+
+
 def reward_update(self):
 	#collect new experience and store it
 	newstate = pack_scene(self.game_state)
@@ -164,6 +212,8 @@ def reward_update(self):
 	
 	self.step_rewards.append(totalreward)
 	self.memory.add(self.currentstate, self.lastaction, totalreward, newstate, is_terminal)
+	
+	self.totalsteps = train_model(self.memory, self.pnet, self.tnet, self.loss, self.optimizer, self.totalsteps, self.step_losses)
 
 
 def end_of_episode(self):
@@ -174,7 +224,7 @@ def end_of_episode(self):
 	global MIN_EXPERIENCES
 	global USE_DOUBLE
 	
-	start = time()
+	#start = time()
 	
 	#look for final state
 	newstate = pack_scene(self.game_state)
@@ -189,44 +239,8 @@ def end_of_episode(self):
 	self.step_rewards.append(totalreward)
 	self.memory.add(self.currentstate, self.lastaction, totalreward, newstate, is_terminal)
 	
-	if len(self.memory) >= MIN_EXPERIENCES:
-		#sample experiences from buffer with batch_size
-		loader = DataLoader(self.memory, BATCH_SIZE, shuffle=True)
-		
-		for i, batch in enumerate(loader):
-			cstates = batch["state"]
-			nstates = batch["nextstate"]
-			actions = batch["action"]
-			rewards = batch["reward"]
-			terminals = batch["terminal"].byte()
-			
-			#calculate q values and loss
-			qs = self.pnet(cstates).gather(1, actions) #actual q values -> only select those which belong to the taken actions
-			
-			nextq = 0
-			with torch.no_grad():
-				if USE_DOUBLE:
-					nextq = self.tnet(nstates)[self.pnet(nstates).max(1)[0].long()] #let the policy net decide the action
-				else:
-					nextq = self.tnet(nstates).max(1)[0] #no backprop needed here
-				#self.logger.info(terminals)
-				nextq[terminals] = 0
-				nextq = nextq*GAMMA+rewards
-			
-			loss = self.loss(qs, nextq)
-			
-			#do back propagation
-			self.optimizer.zero_grad()
-			loss.backward()
-			self.optimizer.step()
-			
-			#store values for plotting
-			self.step_losses.append(loss.item())
-			
-			#update target net
-			self.totalsteps += 1
-			if self.totalsteps % TARGET_UPDATE == 0:
-				self.tnet.load_state_dict(self.pnet.state_dict())
+	self.totalsteps = train_model(self.memory, self.pnet, self.tnet, self.loss, self.optimizer, self.totalsteps, self.step_losses)
+
 		
 	
 	curpath = os.path.dirname(os.path.realpath(__file__))
@@ -276,4 +290,4 @@ def end_of_episode(self):
 		np.save(os.path.join(curpath, "checkpoints", RUN_NAME, "losses.npy"), np.array(self.avg_losses))
 		np.save(os.path.join(curpath, "checkpoints", RUN_NAME, "steps.npy"), np.array(self.steps_per_episode))
 	
-	self.logger.info("Training Episode {} took {:.2f}s".format(self.numepisodes, time()-start))
+	#self.logger.info("Training Episode {} took {:.2f}s".format(self.numepisodes, time()-start))
