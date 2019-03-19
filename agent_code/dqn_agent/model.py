@@ -10,8 +10,8 @@ class FFQN(nn.Module):
 		super(FFQN, self).__init__()
 		
 		#define Network here
-		self.ll1 = nn.Linear(insize, 1000)
-		self.ll2 = nn.Linear(1000, 800)
+		self.ll1 = nn.Linear(insize, 800)
+		self.ll2 = nn.Linear(800, 800)
 		self.ll3 = nn.Linear(800, 400)
 		self.ll4 = nn.Linear(400, outsize)
 	
@@ -32,8 +32,8 @@ class DuelingFFQN(nn.Module):
 		super(DuelingFFQN, self).__init__()
 		
 		#define Network
-		self.ll1 = nn.Linear(insize, 1000)
-		self.ll2 = nn.Linear(1000, 800)
+		self.ll1 = nn.Linear(insize, 800)
+		self.ll2 = nn.Linear(800, 800)
 		
 		#now split up in action and value network
 		self.a1 = nn.Linear(800, 400)

@@ -17,13 +17,9 @@ import os
 import matplotlib.pyplot as plt
 
 
-#TODO
-#- use multiple frames as state (at least 2 vectors)
-
-
 #######################
 #Variables
-RUN_NAME = "Run_1"
+RUN_NAME = "test"
 CONTINUE_TRAIN = False
 DEVICE = 0
 
@@ -35,6 +31,7 @@ BATCH_SIZE = 128 #32
 EXPERIENCEBUF_SIZE = 10000 #number of experiences stored in experience replay buffer
 GAMMA = 0.95
 MIN_EXPERIENCES = 200
+EXPERIENCE_SIZE = 2
 
 USE_NET = "dueling" #"default"
 USE_DOUBLE = True
@@ -51,6 +48,7 @@ def setup(self):
 	global DEVICE
 	global EXPERIENCEBUF_SIZE
 	global CONTINUE_TRAIN
+	global EXPERIENCE_SIZE
 	global USE_NET
 
 	start = time()
@@ -76,7 +74,9 @@ def setup(self):
 	
 	#initialize model, optimizer and loss
 	#calculate input length
-	inlen = 4*s.rows*s.cols+3
+	#inlen = 4*s.rows*s.cols+3
+	#explosion map+arena + self + coins + bombs + opponents
+	inlen = (2*s.rows*s.cols+3+9*2+s.max_agents*3+s.max_agents*2)*EXPERIENCE_SIZE
 	
 	self.pnet = 0 #policy net
 	if USE_NET == "dueling":
@@ -118,7 +118,10 @@ def setup(self):
 	self.optimizer = optim.Adam(self.pnet.parameters(), lr=0.001)
 	
 	#initialize loss - L1
-	self.loss = nn.SmoothL1Loss() #maybe choose Huber loss here
+	self.loss = nn.SmoothL1Loss(reduction="none") #maybe choose Huber loss here
+	
+	#state buffer
+	self.statebuffer = []
 	
 	self.logger.info("Client initialized in {:.2f}s".format(time()-start))
 
@@ -126,21 +129,28 @@ def setup(self):
 def act(self):
 	global EPSILON_DECAY
 	global EPSILON_FINAL
+	global EXPERIENCE_SIZE
 	
-	self.nextaction = s.actions[5] #default is wait
+	self.nextaction = "WAIT" #default is wait
 	self.current_steps += 1
 	
-	#access scene information and build data from it
-	self.currentstate = pack_scene(self.game_state)
+	#at the beginning of each episode we need to fill the state buffer with the same values (no first round is wasted)
+	if self.current_steps == 1:
+		self.statebuffer = []
+		state = pack_scene(self.game_state)
+		for i in range(EXPERIENCE_SIZE):
+			self.statebuffer.append(state)
+	
+	#build current world state
+	self.currentstate = torch.cat(self.statebuffer)
 	cstate = self.currentstate.to(self.device)
 	
 	if self.game_state["train"]:
 		#do exploration/exploitation to choose action
 		if self.epsilon > 0.1:
 			self.epsilon -= EPSILON_DECAY
-		self.lastaction = greedy_epsilon(self.pnet, cstate, self.epsilon) #most of world is known, therefore exploit more
-		self.lastaction = self.lastaction
-		self.next_action = s.actions[self.lastaction]
+		self.lastaction = greedy_epsilon(self.pnet, cstate, self.epsilon) #other options would could be tried here
+		self.next_action = s.actions[self.lastaction] #get action string
 	else:
 		#just do a single forward pass
 		with torch.no_grad():
@@ -171,12 +181,8 @@ def train_model(memory, pnet, tnet, loss, optimizer, totalsteps, step_losses):
 			nextq[terminals] = 0
 			nextq = nextq*GAMMA+rewards
 		
-		error = 0
-		if USE_PER:
-			error = loss(qs, nextq, reduction="none")*weights
-			error = error.mean()
-		else:
-			error = loss(qs, nextq)
+		error = loss(qs, nextq).double() * weights
+		error = error.mean()
 		
 		#do back propagation
 		optimizer.zero_grad()
@@ -187,7 +193,7 @@ def train_model(memory, pnet, tnet, loss, optimizer, totalsteps, step_losses):
 		step_losses.append(error.item())
 		
 		if USE_PER:
-			errors = torch.abs(qs-nextq).data.numpy()
+			errors = torch.abs(qs-nextq).cpu().detach().numpy()
 			#update priority
 			memory.update_many(indices, errors)
 		#update target net
@@ -198,9 +204,12 @@ def train_model(memory, pnet, tnet, loss, optimizer, totalsteps, step_losses):
 	return totalsteps
 
 
-def reward_update(self):
+def reward_update(self):	
 	#collect new experience and store it
-	newstate = pack_scene(self.game_state)
+	state = pack_scene(self.game_state)
+	self.statebuffer.pop(0)
+	self.statebuffer.append(state)
+	newstate = torch.cat(self.statebuffer)
 	
 	#get reward
 	totalreward = 0
@@ -224,10 +233,16 @@ def end_of_episode(self):
 	global MIN_EXPERIENCES
 	global USE_DOUBLE
 	
-	#start = time()
+	if self.current_steps <= (EXPERIENCE_SIZE-1): #ignore first rounds
+		return
+	
+	#collect new experience and store it
+	state = pack_scene(self.game_state)
+	self.statebuffer.pop(0)
+	self.statebuffer.append(state)
+	newstate = torch.cat(self.statebuffer)
 	
 	#look for final state
-	newstate = pack_scene(self.game_state)
 	totalreward = 0
 	is_terminal = False
 	for ev in self.events:
@@ -239,9 +254,7 @@ def end_of_episode(self):
 	self.step_rewards.append(totalreward)
 	self.memory.add(self.currentstate, self.lastaction, totalreward, newstate, is_terminal)
 	
-	self.totalsteps = train_model(self.memory, self.pnet, self.tnet, self.loss, self.optimizer, self.totalsteps, self.step_losses)
-
-		
+	self.totalsteps = train_model(self.memory, self.pnet, self.tnet, self.loss, self.optimizer, self.totalsteps, self.step_losses)		
 	
 	curpath = os.path.dirname(os.path.realpath(__file__))
 	self.numepisodes += 1
@@ -254,26 +267,26 @@ def end_of_episode(self):
 	
 	if self.numepisodes % 50 == 0:
 		plt.figure(1, dpi=200)
-		plt.title("Average Reward per Episode")
+		plt.title("Average Reward per 50 Episodes")
 		plt.xlabel("Episode")
 		plt.ylabel("Reward")
-		plt.plot(np.arange(len(self.avg_rewards))*10, self.avg_rewards)
+		plt.plot(np.arange(len(self.avg_rewards))*50, self.avg_rewards)
 		plt.savefig(os.path.join(curpath, "checkpoints", RUN_NAME, "rewards.pdf"))
 		plt.clf()
 		
 		plt.figure(2, dpi=200)
-		plt.title("Average Loss per Episode")
+		plt.title("Average Loss per 50 Episodes")
 		plt.xlabel("Episode")
 		plt.ylabel("Loss")
-		plt.plot(np.arange(len(self.avg_losses))*10, self.avg_losses)
+		plt.plot(np.arange(len(self.avg_losses))*50, self.avg_losses)
 		plt.savefig(os.path.join(curpath, "checkpoints", RUN_NAME, "losses.pdf"))
 		plt.clf()
 		
 		plt.figure(3, dpi=200)
-		plt.title("Steps per Episode")
+		plt.title("Average Steps per 50 Episodes")
 		plt.xlabel("Episode")
 		plt.ylabel("Steps")
-		plt.plot(np.arange(len(self.steps_per_episode))*10, self.steps_per_episode)
+		plt.plot(np.arange(len(self.steps_per_episode))*50, self.steps_per_episode)
 		plt.savefig(os.path.join(curpath, "checkpoints", RUN_NAME, "steps.pdf"))
 		plt.clf()
 	
@@ -289,5 +302,3 @@ def end_of_episode(self):
 		np.save(os.path.join(curpath, "checkpoints", RUN_NAME, "rewards.npy"), np.array(self.avg_rewards))
 		np.save(os.path.join(curpath, "checkpoints", RUN_NAME, "losses.npy"), np.array(self.avg_losses))
 		np.save(os.path.join(curpath, "checkpoints", RUN_NAME, "steps.npy"), np.array(self.steps_per_episode))
-	
-	#self.logger.info("Training Episode {} took {:.2f}s".format(self.numepisodes, time()-start))
