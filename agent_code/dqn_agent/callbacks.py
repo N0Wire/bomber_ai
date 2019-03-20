@@ -11,7 +11,7 @@ import torch.optim as optim #for ADAM optimizer
 from .model import FFQN, DuelingFFQN
 from .memory import pack_scene, PrioritizedReplayBuffer
 from .rewards import rewards_default, rewards_clipped
-from .exp import greedy_epsilon
+from .exp import greedy_epsilon, boltzmann
 
 import os
 import matplotlib.pyplot as plt
@@ -19,16 +19,16 @@ import matplotlib.pyplot as plt
 
 #######################
 #Variables
-RUN_NAME = "test"
+RUN_NAME = "Agent_reward_boltzmann"
 CONTINUE_TRAIN = False
-DEVICE = 0
+DEVICE = 1
 
-EPSILON_DECAY = 0.0001
+EPSILON_DECAY = 0.00005
 EPSILON_FINAL = 0.1
 
 TARGET_UPDATE = 400 #200
 BATCH_SIZE = 128 #32
-EXPERIENCEBUF_SIZE = 10000 #number of experiences stored in experience replay buffer
+EXPERIENCEBUF_SIZE = 20000 #number of experiences stored in experience replay buffer
 GAMMA = 0.95
 MIN_EXPERIENCES = 200
 EXPERIENCE_SIZE = 2
@@ -76,13 +76,13 @@ def setup(self):
 	#calculate input length
 	#inlen = 4*s.rows*s.cols+3
 	#explosion map+arena + self + coins + bombs + opponents
-	inlen = (2*s.rows*s.cols+3+9*2+s.max_agents*3+s.max_agents*2)*EXPERIENCE_SIZE
+	self.inlen = (2*s.rows*s.cols+3+9*2+s.max_agents*3+s.max_agents*3)*EXPERIENCE_SIZE
 	
 	self.pnet = 0 #policy net
 	if USE_NET == "dueling":
-		self.pnet = DuelingFFQN(inlen, len(s.actions))
+		self.pnet = DuelingFFQN(self.inlen, len(s.actions))
 	else:
-		self.pnet = FFQN(inlen, len(s.actions))
+		self.pnet = FFQN(self.inlen, len(s.actions))
 	self.pnet.to(self.device) #we only use device 0
 	
 	#try to load latest model
@@ -108,9 +108,9 @@ def setup(self):
 	
 	self.tnet = 0 #target net - only updated every C times
 	if USE_NET == "dueling":
-		self.tnet = DuelingFFQN(inlen, len(s.actions))
+		self.tnet = DuelingFFQN(self.inlen, len(s.actions))
 	else:
-		self.tnet = FFQN(inlen, len(s.actions))
+		self.tnet = FFQN(self.inlen, len(s.actions))
 	self.tnet.to(self.device)
 	self.tnet.load_state_dict(self.pnet.state_dict()) #initial target net is same as policy net
 	
@@ -119,6 +119,7 @@ def setup(self):
 	
 	#initialize loss - L1
 	self.loss = nn.SmoothL1Loss(reduction="none") #maybe choose Huber loss here
+	#self.loss = nn.MSELoss(reduction="none") #L2
 	
 	#state buffer
 	self.statebuffer = []
@@ -149,7 +150,8 @@ def act(self):
 		#do exploration/exploitation to choose action
 		if self.epsilon > 0.1:
 			self.epsilon -= EPSILON_DECAY
-		self.lastaction = greedy_epsilon(self.pnet, cstate, self.epsilon) #other options would could be tried here
+		#self.lastaction = greedy_epsilon(self.pnet, cstate, self.epsilon) #other options would could be tried here
+		self.lastaction = boltzmann(self.pnet, cstate)
 		self.next_action = s.actions[self.lastaction] #get action string
 	else:
 		#just do a single forward pass

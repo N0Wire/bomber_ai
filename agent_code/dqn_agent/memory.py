@@ -54,12 +54,14 @@ def pack_scene(data):
 	player_canbomb = np.array([data["self"][3]])
 	#playerinfo = np.array(data["self"])
 	
-	opponents_pos = np.zeros((s.max_agents, 2))
-	others = np.array(data["others"])
-	if others.shape[0] > 0:
-		opponents_pos[0:others.shape[0]] = others
+	opponents_info = np.zeros((s.max_agents, 3))
+	others_pos = np.array(data["others"])[:,0:2]
+	others_canbomb = np.array(data["others"])[:,3]
+	if others_pos.shape[0] > 0:
+		opponents_info[0:others_pos.shape[0], 0:2] = others_pos
+		opponents_info[0:others_pos.shape[0], 2] = others_canbomb
 	else:
-		opponents_pos.fill(-1)
+		opponents_info.fill(-1)
 	
 	bombinfo = np.zeros((s.max_agents, 3))
 	bombs = np.array(data["bombs"])
@@ -76,7 +78,7 @@ def pack_scene(data):
 		coininfo.fill(-1)
 	
 	#put it together into a vector
-	vec = np.concatenate([arena.ravel(), explosionmap.ravel(), player_pos, player_canbomb, bombinfo.ravel(), coininfo.ravel(), opponents_pos.ravel()])
+	vec = np.concatenate([arena.ravel(), explosionmap.ravel(), player_pos, player_canbomb, bombinfo.ravel(), coininfo.ravel(), opponents_info.ravel()])
 	
 	return torch.from_numpy(np.array(vec)).float()  #[vec]
 
