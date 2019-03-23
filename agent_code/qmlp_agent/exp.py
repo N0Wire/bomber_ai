@@ -25,4 +25,3 @@ def boltzmann(net, state, temp=0.5):
 	with torch.no_grad():
 		pvals = F.softmax(net(state)/temp, dim=0)
 		return pvals.max(0)[1]
-

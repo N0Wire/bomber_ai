@@ -19,18 +19,18 @@ import matplotlib.pyplot as plt
 
 #######################
 #Variables
-RUN_NAME = "Agent_reward_boltzmann"
-CONTINUE_TRAIN = False
-DEVICE = 1
+RUN_NAME = "main"
+CONTINUE_TRAIN = True
+DEVICE = 0
 
 EPSILON_DECAY = 0.00005
 EPSILON_FINAL = 0.1
 
-TARGET_UPDATE = 400 #200
+TARGET_UPDATE = 800 #200
 BATCH_SIZE = 128 #32
-EXPERIENCEBUF_SIZE = 20000 #number of experiences stored in experience replay buffer
+EXPERIENCEBUF_SIZE = 10 #50000 #number of experiences stored in experience replay buffer
 GAMMA = 0.95
-MIN_EXPERIENCES = 200
+MIN_EXPERIENCES = 5000
 EXPERIENCE_SIZE = 2
 
 USE_NET = "dueling" #"default"
@@ -53,7 +53,8 @@ def setup(self):
 
 	start = time()
 	#initialize CUDA
-	dev = "cuda:{}".format(DEVICE) if torch.cuda.is_available() else "cpu"
+	#dev = "cuda:{}".format(DEVICE) if torch.cuda.is_available() else "cpu"
+	dev = "cpu" #final agent should only run on cpu
 	self.device = torch.device(dev)
 	self.logger.info("Using device: " + dev)
 	
@@ -95,14 +96,15 @@ def setup(self):
 	files = [f for f in os.listdir(path) if f.find(".pth") > 0]
 	files.sort()
 	if len(files) > 0 and CONTINUE_TRAIN:
-		self.pnet.load_state_dict(torch.load(path+"/"+files[-1]))
+		self.pnet.load_state_dict(torch.load(path+"/"+files[-1], map_location="cpu"))
+		print("Loaded model {}".format(files[-1]))
 		pos = files[-1].find(".pth")
 		if pos > 0:
 			self.numepisodes = int(files[-1][8:pos]) #for continuing training
 		
-		self.avg_rewards = np.load(path+"/rewards.npy").tolist()
-		self.avg_losses = np.load(path+"/losses.npy").tolist()
-		self.steps_per_episode = np.load(path+"/steps.npy").tolist()
+		#self.avg_rewards = np.load(path+"/rewards.npy").tolist()
+		#self.avg_losses = np.load(path+"/losses.npy").tolist()
+		#self.steps_per_episode = np.load(path+"/steps.npy").tolist()
 	else:
 		self.pnet.apply(init_weights)
 	
@@ -120,6 +122,7 @@ def setup(self):
 	#initialize loss - L1
 	self.loss = nn.SmoothL1Loss(reduction="none") #maybe choose Huber loss here
 	#self.loss = nn.MSELoss(reduction="none") #L2
+	#self.loss = nn.L1Loss(reduction="none") #L1
 	
 	#state buffer
 	self.statebuffer = []
@@ -150,8 +153,8 @@ def act(self):
 		#do exploration/exploitation to choose action
 		if self.epsilon > 0.1:
 			self.epsilon -= EPSILON_DECAY
-		#self.lastaction = greedy_epsilon(self.pnet, cstate, self.epsilon) #other options would could be tried here
-		self.lastaction = boltzmann(self.pnet, cstate)
+		self.lastaction = greedy_epsilon(self.pnet, cstate, self.epsilon) #other options would could be tried here
+		#self.lastaction = boltzmann(self.pnet, cstate)
 		self.next_action = s.actions[self.lastaction] #get action string
 	else:
 		#just do a single forward pass

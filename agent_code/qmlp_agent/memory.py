@@ -55,9 +55,10 @@ def pack_scene(data):
 	#playerinfo = np.array(data["self"])
 	
 	opponents_info = np.zeros((s.max_agents, 3))
-	others_pos = np.array(data["others"])[:,0:2]
-	others_canbomb = np.array(data["others"])[:,3]
+	others_pos = np.array(data["others"])
 	if others_pos.shape[0] > 0:
+		others_pos = np.array(data["others"])[:,0:2]
+		others_canbomb = np.array(data["others"])[:,3]
 		opponents_info[0:others_pos.shape[0], 0:2] = others_pos
 		opponents_info[0:others_pos.shape[0], 2] = others_canbomb
 	else:
